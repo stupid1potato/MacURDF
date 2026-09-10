@@ -20,13 +20,14 @@ struct ContentView: View {
             }
             .frame(maxHeight: .infinity)
 
-            Divider()
-
-            IssuesPanelPlaceholder(
-                issues: appModel.displayedIssues,
-                status: appModel.statusMessage
-            )
-            .frame(minHeight: 120, idealHeight: 160, maxHeight: 260)
+            if appModel.showIssuesPanel {
+                Divider()
+                IssuesPanelPlaceholder(
+                    issues: appModel.displayedIssues,
+                    status: appModel.statusMessage
+                )
+                .frame(minHeight: 120, idealHeight: 160, maxHeight: 260)
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay {

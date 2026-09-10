@@ -61,6 +61,15 @@ struct MacURDFApp: App {
                         set: { appModel.setTealMeshTint($0) }
                     )
                 )
+                Divider()
+                Toggle(
+                    "Issues",
+                    isOn: Binding(
+                        get: { appModel.showIssuesPanel },
+                        set: { appModel.setShowIssuesPanel($0) }
+                    )
+                )
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             }
         }
 

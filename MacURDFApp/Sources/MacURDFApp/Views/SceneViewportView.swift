@@ -43,6 +43,11 @@ struct SceneViewportView: View {
                         set: { appModel.setUseZUpToYUp($0) }
                     ))
                     .toggleStyle(.checkbox)
+                    Toggle("Issues", isOn: Binding(
+                        get: { appModel.showIssuesPanel },
+                        set: { appModel.setShowIssuesPanel($0) }
+                    ))
+                    .toggleStyle(.checkbox)
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -82,7 +87,10 @@ enum ViewportScene {
 
         let camera = SCNNode()
         camera.camera = SCNCamera()
-        camera.camera?.zFar = 200
+        // Default SCNCamera zNear (~1m) clips meter-scale robots when zooming in.
+        camera.camera?.zNear = 0.001
+        camera.camera?.zFar = 500
+        camera.camera?.automaticallyAdjustsZRange = false
         camera.position = SCNVector3(2.5, 2.0, 4.0)
         camera.look(at: SCNVector3(0, 0.2, 0))
         camera.name = "MainCamera"
@@ -97,6 +105,24 @@ enum ViewportScene {
         cube.position = SCNVector3(0, 0.2, 0)
         cube.name = "PlaceholderLink"
         return cube
+    }
+
+    /// Keep near plane tiny so close orbit/zoom does not eat the mesh; stretch far from AABB.
+    static func configureCameraClipping(cameraNode: SCNNode?, fitting target: SCNNode?) {
+        guard let cam = cameraNode?.camera else { return }
+        cam.zNear = 0.001
+        cam.zFar = 500
+        cam.automaticallyAdjustsZRange = false
+        guard let target else { return }
+        let (bmin, bmax) = target.boundingBox
+        let dx = Double(bmax.x - bmin.x)
+        let dy = Double(bmax.y - bmin.y)
+        let dz = Double(bmax.z - bmin.z)
+        let extent = (dx * dx + dy * dy + dz * dz).squareRoot()
+        if extent.isFinite, extent > 1e-6 {
+            cam.zNear = max(0.0001, extent * 0.00005)
+            cam.zFar = max(200, extent * 100)
+        }
     }
 
     private static func gridNode(size: Int, step: Int) -> SCNNode {
@@ -165,6 +191,11 @@ struct SceneViewRepresentable: NSViewRepresentable {
         view.autoenablesDefaultLighting = false
         view.antialiasingMode = .multisampling4X
         rebuild(view: view, context: context, preserveCamera: false)
+        if let cam = view.pointOfView?.camera {
+            cam.zNear = 0.001
+            cam.zFar = 500
+            cam.automaticallyAdjustsZRange = false
+        }
         return view
     }
 
@@ -175,6 +206,11 @@ struct SceneViewRepresentable: NSViewRepresentable {
         }
         // FK-only: update existing link node transforms (no SCNScene swap).
         applyTransforms(context.coordinator)
+        if let cam = nsView.pointOfView?.camera, cam.zNear > 0.05 {
+            cam.zNear = 0.001
+            cam.automaticallyAdjustsZRange = false
+            if cam.zFar < 100 { cam.zFar = 500 }
+        }
     }
 
     private func rebuild(view: SCNView, context: Context, preserveCamera: Bool) {
@@ -239,6 +275,18 @@ struct SceneViewRepresentable: NSViewRepresentable {
         }
         context.coordinator.linkNodes = map
         context.coordinator.appliedEpoch = sceneEpoch
+
+        let camNode = scene.rootNode.childNode(withName: "MainCamera", recursively: false)
+            ?? view.pointOfView
+        let fit = document.flatMap { scene.rootNode.childNode(withName: $0.robotName, recursively: true) }
+            ?? scene.rootNode.childNode(withName: "URDFWorldCorrection", recursively: false)
+        ViewportScene.configureCameraClipping(cameraNode: camNode, fitting: fit)
+        if let cam = camNode?.camera {
+            // Also apply to active POV if orbit created a different camera node.
+            view.pointOfView?.camera?.zNear = cam.zNear
+            view.pointOfView?.camera?.zFar = cam.zFar
+            view.pointOfView?.camera?.automaticallyAdjustsZRange = false
+        }
     }
 
     private func applyTransforms(_ coordinator: Coordinator) {

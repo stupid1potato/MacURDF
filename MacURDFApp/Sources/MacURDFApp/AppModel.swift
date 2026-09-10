@@ -24,6 +24,8 @@ final class AppModel: ObservableObject {
     @Published var useZUpToYUp: Bool = true
     /// Force teal on STL/OBJ mesh materials. OFF → neutral gray.
     @Published var tealMeshTint: Bool = true
+    /// Bottom Issues panel visibility (default ON).
+    @Published var showIssuesPanel: Bool = true
     /// Bumped only when scene *structure* must rebuild (open/reload/toggles/selection/mesh).
     @Published private(set) var sceneEpoch: Int = 0
 
@@ -204,6 +206,14 @@ final class AppModel: ObservableObject {
         // Cached STL nodes bake diffuse color — clear so tint reapplies.
         meshNodeCache.removeAll()
         rebuildSceneStructure()
+    }
+
+    func setShowIssuesPanel(_ value: Bool) {
+        showIssuesPanel = value
+    }
+
+    func toggleIssuesPanel() {
+        showIssuesPanel.toggle()
     }
 
     /// Returns a clone of the cached mesh node for a resolved URL (STL/OBJ via MeshLoader, DAE via SCNScene).
