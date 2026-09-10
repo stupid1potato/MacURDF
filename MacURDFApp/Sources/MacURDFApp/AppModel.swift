@@ -178,6 +178,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Returns a clone of the cached mesh node for a resolved URL (STL/OBJ via MeshLoader, DAE via SCNScene).
+    /// Blender COLLADA often fails in SceneKit — on DAE failure, tries `visual/X.dae` → `collision/X.stl`.
     func nodeForResolvedMesh(url: URL) -> SCNNode? {
         if let cached = meshNodeCache[url] {
             return cached.clone()
@@ -188,7 +189,49 @@ final class AppModel: ObservableObject {
                 meshNodeCache[url] = node
                 return node.clone()
             }
+            // SceneKit/MDL cannot open many Blender DAEs — fall back to collision STL.
+            if let stlURL = collisionSTLSibling(ofVisualDAE: url) {
+                retainSecurityScopedIfNeeded(stlURL)
+                retainSecurityScopedIfNeeded(stlURL.deletingLastPathComponent())
+                if let stlNode = loadSTLOrOBJNode(url: stlURL) {
+                    let linkHint = stlURL.deletingPathExtension().lastPathComponent
+                    appendIssue(
+                        severity: .warning,
+                        file: url.lastPathComponent,
+                        message: "SceneKit이 DAE를 열 수 없어 collision STL로 표시 (\(linkHint))",
+                        hint: "DAE: \(url.lastPathComponent) → STL: \(stlURL.path)"
+                    )
+                    // Cache under DAE key so visual path stops showing yellow placeholders.
+                    meshNodeCache[url] = stlNode
+                    meshNodeCache[stlURL] = stlNode
+                    return stlNode.clone()
+                }
+                appendIssue(
+                    severity: .warning,
+                    file: url.lastPathComponent,
+                    message: "DAE 실패 → STL 폴백 실패 (\(url.deletingPathExtension().lastPathComponent))",
+                    hint: "시도한 STL: \(stlURL.path)"
+                )
+            } else {
+                appendIssue(
+                    severity: .warning,
+                    file: url.lastPathComponent,
+                    message: "DAE 로드 실패 (collision STL 없음): \(url.lastPathComponent)",
+                    hint: "visual/*.dae 옆 collision/*.stl 경로를 확인하세요"
+                )
+            }
             return nil
+        }
+        return loadSTLOrOBJNode(url: url)?.clone()
+    }
+
+    func geometryForResolvedMesh(url: URL) -> SCNGeometry? {
+        nodeForResolvedMesh(url: url)?.geometry
+    }
+
+    private func loadSTLOrOBJNode(url: URL) -> SCNNode? {
+        if let cached = meshNodeCache[url] {
+            return cached
         }
         do {
             let buffer = try meshLoader.load(url: url)
@@ -196,19 +239,44 @@ final class AppModel: ObservableObject {
             geo.firstMaterial?.diffuse.contents = NSColor.systemTeal
             let node = SCNNode(geometry: geo)
             meshNodeCache[url] = node
-            return node.clone()
+            return node
         } catch {
-            appendMeshLoadWarning(url: url, detail: nsErrorDetail(error))
+            appendIssue(
+                severity: .warning,
+                file: url.lastPathComponent,
+                message: "메시 로드 실패: \(url.lastPathComponent)",
+                hint: nsErrorDetail(error)
+            )
             return nil
         }
     }
 
-    func geometryForResolvedMesh(url: URL) -> SCNGeometry? {
-        nodeForResolvedMesh(url: url)?.geometry
+    /// `.../visual/linkN.dae` → `.../collision/linkN.stl` (also same-folder `linkN.stl`).
+    private func collisionSTLSibling(ofVisualDAE daeURL: URL) -> URL? {
+        let stem = daeURL.deletingPathExtension().lastPathComponent
+        let parent = daeURL.deletingLastPathComponent()
+        var candidates: [URL] = []
+        if parent.lastPathComponent.lowercased() == "visual" {
+            let collisionDir = parent.deletingLastPathComponent().appendingPathComponent("collision", isDirectory: true)
+            candidates.append(collisionDir.appendingPathComponent("\(stem).stl"))
+            candidates.append(collisionDir.appendingPathComponent("\(stem).STL"))
+        }
+        candidates.append(parent.appendingPathComponent("\(stem).stl"))
+        candidates.append(
+            parent.deletingLastPathComponent()
+                .appendingPathComponent("collision", isDirectory: true)
+                .appendingPathComponent("\(stem).stl")
+        )
+        for url in candidates {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url.standardizedFileURL
+            }
+        }
+        return nil
     }
 
+    /// Loads DAE via SCNScene. Returns nil on failure without posting Issues (caller handles fallback messaging).
     private func loadDAENode(url: URL) -> SCNNode? {
-        // Ensure parent directory is accessible under sandbox.
         retainSecurityScopedIfNeeded(url.deletingLastPathComponent())
         retainSecurityScopedIfNeeded(url)
 
@@ -229,27 +297,16 @@ final class AppModel: ObservableObject {
                     wrapper.geometry = geo
                     wrapper.morpher = scene.rootNode.morpher
                 } else {
-                    appendMeshLoadWarning(
-                        url: url,
-                        detail: "씬에 표시할 노드/지오메트리가 없습니다. 폴더를 Open/DnD 해 패키지 권한을 주세요."
-                    )
                     return nil
                 }
             }
-            return wrapper
+            // Empty visual content still counts as failure for fallback purposes.
+            var hasGeometry = wrapper.geometry != nil
+            wrapper.enumerateChildNodes { child, _ in
+                if child.geometry != nil { hasGeometry = true }
+            }
+            return hasGeometry ? wrapper : nil
         } catch {
-            let detail = nsErrorDetail(error)
-            let sandboxHint =
-                detail.localizedCaseInsensitiveContains("permission")
-                || detail.localizedCaseInsensitiveContains("sandbox")
-                || detail.localizedCaseInsensitiveContains("not permitted")
-                || (error as NSError).domain == NSCocoaErrorDomain
-            appendMeshLoadWarning(
-                url: url,
-                detail: sandboxHint
-                    ? "\(detail) — 샌드박스일 수 있음. URDF가 있는 패키지 폴더를 창에 드롭하거나 File > Open으로 열어 권한을 부여하세요."
-                    : detail
-            )
             return nil
         }
     }
@@ -266,17 +323,30 @@ final class AppModel: ObservableObject {
         return parts.joined(separator: " | ")
     }
 
-    private func appendMeshLoadWarning(url: URL, detail: String) {
+    private func appendIssue(
+        severity: URDFIssue.Severity,
+        file: String?,
+        message: String,
+        hint: String?
+    ) {
         let issue = URDFIssue(
-            severity: .warning,
-            file: url.lastPathComponent,
+            severity: severity,
+            file: file,
             tag: "mesh",
-            message: "메시 로드 실패: \(url.lastPathComponent)",
-            hint: detail
+            message: message,
+            hint: hint
         )
         if !displayedIssues.contains(where: { $0.message == issue.message && $0.file == issue.file }) {
             displayedIssues.append(issue)
         }
+    }
+
+    private func refreshStatusMessage(robotName: String, linkCount: Int, jointCount: Int) {
+        let errN = displayedIssues.filter { $0.severity == .error }.count
+        let warnN = displayedIssues.filter { $0.severity == .warning }.count
+        statusMessage =
+            "\(robotName) — \(linkCount) links, \(jointCount) joints"
+            + (errN + warnN > 0 ? " · \(errN) errors, \(warnN) warnings" : "")
     }
 
     private func apply(document doc: URDFDocument, audits: [MeshAudit]) {
@@ -287,17 +357,19 @@ final class AppModel: ObservableObject {
         selectedJointName = nil
         selectedLinkName = nil
         displayedIssues = doc.errors + doc.warnings
-        let errN = doc.errors.count
-        let warnN = doc.warnings.count
-        statusMessage =
-            "\(doc.robotName) — \(doc.links.count) links, \(doc.joints.count) joints"
-            + (errN + warnN > 0 ? " · \(errN) errors, \(warnN) warnings" : "")
         for audit in audits {
             if case let .resolved(url) = audit.resolution {
                 retainSecurityScopedIfNeeded(url.deletingLastPathComponent())
+                retainSecurityScopedIfNeeded(url)
                 _ = nodeForResolvedMesh(url: url)
             }
         }
+        // Count includes mesh fallback / load Issues appended during warm cache.
+        refreshStatusMessage(
+            robotName: doc.robotName,
+            linkCount: doc.links.count,
+            jointCount: doc.joints.count
+        )
         rebuildSceneStructure()
     }
 

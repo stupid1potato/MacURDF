@@ -65,6 +65,7 @@ enum RobotSceneBuilder {
                     let geo = node(
                         for: .box(size: SIMD3(0.05, 0.05, 0.05)),
                         linkName: link.name,
+                        link: link,
                         auditMap: auditByLinkFile,
                         color: .systemGray,
                         meshNode: meshNode,
@@ -74,25 +75,15 @@ enum RobotSceneBuilder {
                     linkNode.addChildNode(geo)
                 } else {
                     for (idx, visual) in visuals.enumerated() {
-                        var geo = node(
+                        let geo = node(
                             for: visual.geometry,
                             linkName: link.name,
+                            link: link,
                             auditMap: auditByLinkFile,
                             color: .systemTeal,
                             meshNode: meshNode,
                             preserveMaterials: true
                         )
-                        if geo.name == "meshPlaceholder",
-                           case let .mesh(filename, _) = visual.geometry,
-                           filename.lowercased().hasSuffix(".dae") {
-                            if let fallback = collisionMeshFallback(
-                                link: link,
-                                auditMap: auditByLinkFile,
-                                meshNode: meshNode
-                            ) {
-                                geo = fallback
-                            }
-                        }
                         geo.name = "\(link.name)_visual_\(idx)"
                         geo.simdTransform = PoseMath.matrix(from: visual.origin)
                         linkNode.addChildNode(geo)
@@ -105,6 +96,7 @@ enum RobotSceneBuilder {
                     let geo = node(
                         for: collision.geometry,
                         linkName: link.name,
+                        link: link,
                         auditMap: auditByLinkFile,
                         color: NSColor.systemOrange.withAlphaComponent(0.45),
                         meshNode: meshNode,
@@ -133,6 +125,25 @@ enum RobotSceneBuilder {
         return robotRoot
     }
 
+    /// `.../visual/linkN.dae` → `.../collision/linkN.stl`
+    static func collisionSTLURL(fromVisualDAE daeURL: URL) -> URL? {
+        let stem = daeURL.deletingPathExtension().lastPathComponent
+        let parent = daeURL.deletingLastPathComponent()
+        var candidates: [URL] = []
+        if parent.lastPathComponent.lowercased() == "visual" {
+            let collisionDir = parent
+                .deletingLastPathComponent()
+                .appendingPathComponent("collision", isDirectory: true)
+            candidates.append(collisionDir.appendingPathComponent("\(stem).stl"))
+            candidates.append(collisionDir.appendingPathComponent("\(stem).STL"))
+        }
+        candidates.append(parent.appendingPathComponent("\(stem).stl"))
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            return url.standardizedFileURL
+        }
+        return nil
+    }
+
     private static func collisionMeshFallback(
         link: Link,
         auditMap: [String: MeshResolution],
@@ -141,12 +152,12 @@ enum RobotSceneBuilder {
         for collision in link.collisions {
             guard case let .mesh(filename, scale) = collision.geometry else { continue }
             let key = "\(link.name)|\(filename)"
-            guard case let .resolved(url) = auditMap[key],
-                  let n = meshNode(url) else { continue }
-            if let scale {
-                n.scale = SCNVector3(scale.x, scale.y, scale.z)
+            if case let .resolved(url) = auditMap[key], let n = meshNode(url) {
+                if let scale {
+                    n.scale = SCNVector3(scale.x, scale.y, scale.z)
+                }
+                return n
             }
-            return n
         }
         return nil
     }
@@ -154,6 +165,7 @@ enum RobotSceneBuilder {
     private static func node(
         for geometry: Geometry,
         linkName: String,
+        link: Link?,
         auditMap: [String: MeshResolution],
         color: NSColor,
         meshNode: (URL) -> SCNNode?,
@@ -185,7 +197,29 @@ enum RobotSceneBuilder {
         case let .mesh(filename, scale):
             let key = "\(linkName)|\(filename)"
             let resolution = auditMap[key]
-            if case let .resolved(url) = resolution, let n = meshNode(url) {
+            var loaded: SCNNode?
+
+            if case let .resolved(url) = resolution {
+                loaded = meshNode(url)
+                // Extra path-rewrite if DAE key somehow not cached with STL yet
+                if loaded == nil, url.pathExtension.lowercased() == "dae",
+                   let stl = collisionSTLURL(fromVisualDAE: url) {
+                    loaded = meshNode(stl)
+                }
+            }
+
+            if loaded == nil,
+               filename.lowercased().hasSuffix(".dae"),
+               let link,
+               let fallback = collisionMeshFallback(
+                link: link,
+                auditMap: auditMap,
+                meshNode: meshNode
+               ) {
+                loaded = fallback
+            }
+
+            if let n = loaded {
                 if !preserveMaterials {
                     n.enumerateHierarchy { child, _ in
                         child.geometry?.firstMaterial?.diffuse.contents = color
@@ -200,6 +234,7 @@ enum RobotSceneBuilder {
                 }
                 return n
             }
+
             let placeholderColor: NSColor
             switch resolution {
             case .resolved?:
