@@ -63,18 +63,15 @@ final class URDFCoreTests: XCTestCase {
     }
 
     private func fixtureURL(_ relative: String) -> URL {
-        let candidates: [URL] = [
-            URL(fileURLWithPath: "/workspace/macurdf/fixtures/\(relative)"),
-            URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("fixtures/\(relative)"),
-        ]
-        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-        return candidates[0]
+        // #file → …/Tests/URDFCoreTests/*.swift
+        // 5번 up → repo root (…/MacURDF)
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { url.deleteLastPathComponent() }
+        let fixture = url.appendingPathComponent("fixtures").appendingPathComponent(relative)
+        precondition(
+            FileManager.default.fileExists(atPath: fixture.path),
+            "fixture missing: \(fixture.path)"
+        )
+        return fixture
     }
 }

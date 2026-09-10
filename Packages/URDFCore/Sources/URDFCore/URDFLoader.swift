@@ -30,7 +30,7 @@ public struct URDFLoader: URDFLoading, Sendable {
         }
 
         var errors = parser.errors
-        var warnings = parser.warnings
+        let warnings = parser.warnings
         if sniffsXacro {
             let already = errors.contains { $0.message.contains("xacro") }
             if !already {
