@@ -80,3 +80,15 @@ Attach `MacURDFApp/Resources/MacURDFApp.entitlements` to the App target (`App Sa
 
 - Joint slider changes update **link `simdTransform` in place** (no SCNView/`sceneEpoch` rebuild).
 - `sceneEpoch` bumps only on open/reload, visual/collision toggle, and selection halo changes.
+
+
+## App Sandbox / real robot packages (rb*)
+
+Under App Sandbox, **File > Open on a single `.urdf` does not grant access to sibling `meshes/`**.
+
+For `rbpodo_description` / `rb16_900e_u`:
+
+1. Prefer **drop the `rbpodo_description` folder** onto the viewport (or File > **Grant Package Folder Access…**), then open the URDF; or
+2. After Open, choose the package root in the folder panel when prompted.
+
+Blender 4.x DAE visuals are not readable by SceneKit — the app falls back to `collision/linkN.stl` and notes it in Issues.

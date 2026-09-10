@@ -32,6 +32,8 @@ final class AppModel: ObservableObject {
     private var meshNodeCache: [URL: SCNNode] = [:]
     /// Security-scoped URLs currently held open (sandbox).
     private var securityScopedURLs: [URL] = []
+    /// Package roots the user explicitly granted (folder Open / DnD) — never auto-released on file reload.
+    private var persistentPackageRoots: [URL] = []
 
     var linkTransforms: [String: simd_float4x4] {
         guard let doc = document else { return [:] }
@@ -44,28 +46,39 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.message = "Select a URDF file (grant folder access so meshes/DAE can load)"
+        panel.message = "Select a URDF file"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         load(url: url, securityScoped: true)
+        // File-only Open does not cover sibling meshes/ under App Sandbox.
+        promptPackageRootAccess(suggestedNear: url)
+    }
+
+    /// File > Grant Package Folder Access… — e.g. rbpodo_description.
+    func grantPackageFolderAccess() {
+        let near = openedURL ?? persistentPackageRoots.first
+        promptPackageRootAccess(suggestedNear: near)
     }
 
     func noteOpenedDocument(url: URL?) {
         guard let url else { return }
         load(url: url, securityScoped: true)
+        promptPackageRootAccess(suggestedNear: url)
     }
 
     func load(url: URL, securityScoped: Bool = true) {
-        releaseSecurityScopedAccess()
+        // Keep persistent package roots; only drop ephemeral file scopes.
+        releaseEphemeralSecurityScopedAccess()
         if securityScoped {
             beginSecurityScopedAccess(forDocument: url)
         } else {
-            // DnD / programmatic — still attempt scoped access (no-op if not scoped).
             beginSecurityScopedAccess(forDocument: url)
+        }
+        for root in persistentPackageRoots {
+            retainSecurityScopedIfNeeded(root)
         }
 
         openedURL = url
         mergePackageHint(fromDocumentURL: url)
-        // Re-access hints after merge
         for hint in packageHints {
             retainSecurityScopedIfNeeded(hint)
         }
@@ -97,8 +110,8 @@ final class AppModel: ObservableObject {
     }
 
     func loadFromFolder(_ folderURL: URL) {
-        retainSecurityScopedIfNeeded(folderURL)
-        addPackageHint(folderURL)
+        // Folder DnD is the preferred sandbox grant for package:// meshes.
+        rememberPackageRoot(folderURL)
         let urdfs = urdfFiles(in: folderURL)
         if urdfs.isEmpty {
             displayedIssues = [
@@ -106,7 +119,7 @@ final class AppModel: ObservableObject {
                     severity: .error,
                     file: folderURL.lastPathComponent,
                     message: "폴더에 .urdf 파일이 없습니다",
-                    hint: "URDF가 있는 폴더를 드롭하세요"
+                    hint: "URDF가 있는 패키지 폴더(예: rbpodo_description)를 드롭하세요"
                 ),
             ]
             statusMessage = "No .urdf in folder"
@@ -114,13 +127,13 @@ final class AppModel: ObservableObject {
         }
         if urdfs.count > 1 {
             load(url: urdfs[0], securityScoped: true)
-            let warn = URDFIssue(
+            appendIssue(
                 severity: .warning,
                 file: folderURL.lastPathComponent,
                 message: "폴더에 .urdf가 \(urdfs.count)개 있어 첫 파일만 로드했습니다: \(urdfs[0].lastPathComponent)",
                 hint: "원하는 파일이면 File > Open으로 직접 선택하세요"
             )
-            displayedIssues = [warn] + displayedIssues
+            refreshStatusFromDocument()
             return
         }
         load(url: urdfs[0], securityScoped: true)
@@ -233,7 +246,29 @@ final class AppModel: ObservableObject {
         if let cached = meshNodeCache[url] {
             return cached
         }
+        // Probe readability under sandbox before MeshLoader.
         do {
+            let attrs = try url.resourceValues(forKeys: [.isReadableKey, .fileSizeKey])
+            if attrs.isReadable == false {
+                appendIssue(
+                    severity: .warning,
+                    file: url.lastPathComponent,
+                    message: "STL 읽기 권한 없음 (샌드박스): \(url.lastPathComponent)",
+                    hint: "\(url.path) — 패키지 폴더를 DnD 하거나 File > Grant Package Folder Access…"
+                )
+                return nil
+            }
+        } catch {
+            appendIssue(
+                severity: .warning,
+                file: url.lastPathComponent,
+                message: "STL 메타데이터 조회 실패: \(url.lastPathComponent)",
+                hint: nsErrorDetail(error)
+            )
+        }
+        do {
+            // Force Data read so sandbox failures surface as NSError (not silent).
+            _ = try Data(contentsOf: url, options: [.mappedIfSafe])
             let buffer = try meshLoader.load(url: url)
             let geo = MeshBufferSceneKit.geometry(from: buffer)
             geo.firstMaterial?.diffuse.contents = NSColor.systemTeal
@@ -244,14 +279,14 @@ final class AppModel: ObservableObject {
             appendIssue(
                 severity: .warning,
                 file: url.lastPathComponent,
-                message: "메시 로드 실패: \(url.lastPathComponent)",
-                hint: nsErrorDetail(error)
+                message: "STL Data 로드 실패 (샌드박스/POSIX): \(url.lastPathComponent)",
+                hint: nsErrorDetail(error) + " | path=\(url.path)"
             )
             return nil
         }
     }
 
-    /// `.../visual/linkN.dae` → `.../collision/linkN.stl` (also same-folder `linkN.stl`).
+    /// `.../visual/linkN.dae` → `.../collision/linkN.stl` (also same-folder / package-root search).
     private func collisionSTLSibling(ofVisualDAE daeURL: URL) -> URL? {
         let stem = daeURL.deletingPathExtension().lastPathComponent
         let parent = daeURL.deletingLastPathComponent()
@@ -267,10 +302,40 @@ final class AppModel: ObservableObject {
                 .appendingPathComponent("collision", isDirectory: true)
                 .appendingPathComponent("\(stem).stl")
         )
+        // Under granted package roots: meshes/<robot>/collision/linkN.stl
+        for root in persistentPackageRoots + packageHints {
+            candidates.append(
+                root.appendingPathComponent("meshes", isDirectory: true)
+                    .appendingPathComponent("collision", isDirectory: true)
+                    .appendingPathComponent("\(stem).stl")
+            )
+            // rb layout: meshes/rb16_900e_u/collision/linkN.stl
+            let meshes = root.appendingPathComponent("meshes", isDirectory: true)
+            if let kids = try? FileManager.default.contentsOfDirectory(
+                at: meshes,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) {
+                for kid in kids {
+                    candidates.append(
+                        kid.appendingPathComponent("collision", isDirectory: true)
+                            .appendingPathComponent("\(stem).stl")
+                    )
+                }
+            }
+        }
         for url in candidates {
             if FileManager.default.fileExists(atPath: url.path) {
                 return url.standardizedFileURL
             }
+        }
+        // Return best-guess path even if fileExists is false (sandbox can lie) so load error surfaces.
+        if parent.lastPathComponent.lowercased() == "visual" {
+            return parent
+                .deletingLastPathComponent()
+                .appendingPathComponent("collision", isDirectory: true)
+                .appendingPathComponent("\(stem).stl")
+                .standardizedFileURL
         }
         return nil
     }
@@ -337,8 +402,17 @@ final class AppModel: ObservableObject {
             hint: hint
         )
         if !displayedIssues.contains(where: { $0.message == issue.message && $0.file == issue.file }) {
-            displayedIssues.append(issue)
+            displayedIssues = displayedIssues + [issue]
         }
+    }
+
+    private func refreshStatusFromDocument() {
+        let name = document?.robotName ?? openedURL?.deletingPathExtension().lastPathComponent ?? "—"
+        refreshStatusMessage(
+            robotName: name,
+            linkCount: document?.links.count ?? 0,
+            jointCount: document?.joints.count ?? 0
+        )
     }
 
     private func refreshStatusMessage(robotName: String, linkCount: Int, jointCount: Int) {
@@ -379,19 +453,109 @@ final class AppModel: ObservableObject {
 
     // MARK: - Security-scoped access (App Sandbox)
 
+    private func promptPackageRootAccess(suggestedNear url: URL?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = true
+        panel.message = "Select package root folder (e.g. rbpodo_description) so visual/collision meshes load under App Sandbox"
+        panel.prompt = "Grant Access"
+        if let url {
+            // robots/foo.urdf → often …/rbpodo_description/
+            panel.directoryURL = url
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+        }
+        // Non-blocking feel: still modal, cancel is OK (user can DnD folder later).
+        guard panel.runModal() == .OK, let dir = panel.url else {
+            appendIssue(
+                severity: .warning,
+                file: openedURL?.lastPathComponent,
+                message: "패키지 폴더 권한이 없습니다 — meshes/collision STL이 샌드박스에 막힐 수 있습니다",
+                hint: "File > Grant Package Folder Access… 또는 rbpodo_description 폴더를 창에 드롭하세요"
+            )
+            refreshStatusFromDocument()
+            return
+        }
+        rememberPackageRoot(dir)
+        remountMeshesAfterPackageGrant()
+    }
+
+    private func rememberPackageRoot(_ url: URL) {
+        let standardized = url.standardizedFileURL
+        retainSecurityScopedIfNeeded(standardized)
+        if !persistentPackageRoots.contains(standardized) {
+            persistentPackageRoots.append(standardized)
+        }
+        addPackageHint(standardized)
+        // Also hint common children
+        addPackageHint(standardized.appendingPathComponent("meshes", isDirectory: true))
+        appendIssue(
+            severity: .warning,
+            file: standardized.lastPathComponent,
+            message: "패키지 폴더 접근 허용: \(standardized.lastPathComponent)",
+            hint: standardized.path
+        )
+    }
+
+    /// Clear mesh cache and re-audit/reload meshes with current package access.
+    private func remountMeshesAfterPackageGrant() {
+        guard let url = openedURL else {
+            refreshStatusFromDocument()
+            rebuildSceneStructure()
+            return
+        }
+        meshNodeCache.removeAll()
+        do {
+            let raw = try loader.load(urdfURL: url)
+            let (audited, audits) = raw.applyingMeshAudit(
+                resolver: meshResolver,
+                packageHints: packageHints
+            )
+            apply(document: audited, audits: audits)
+        } catch {
+            appendIssue(
+                severity: .error,
+                file: url.lastPathComponent,
+                message: "패키지 권한 후 재로드 실패: \(error.localizedDescription)",
+                hint: nil
+            )
+            refreshStatusFromDocument()
+            rebuildSceneStructure()
+        }
+    }
+
     private func beginSecurityScopedAccess(forDocument url: URL) {
         retainSecurityScopedIfNeeded(url)
         retainSecurityScopedIfNeeded(url.deletingLastPathComponent())
         retainSecurityScopedIfNeeded(url.deletingLastPathComponent().deletingLastPathComponent())
     }
 
-    private func retainSecurityScopedIfNeeded(_ url: URL) {
+    @discardableResult
+    private func retainSecurityScopedIfNeeded(_ url: URL) -> Bool {
         let standardized = url.standardizedFileURL
-        if securityScopedURLs.contains(standardized) { return }
-        // Returns true only for security-scoped URLs (Open panel / DnD under sandbox).
+        if securityScopedURLs.contains(standardized) { return true }
         if standardized.startAccessingSecurityScopedResource() {
             securityScopedURLs.append(standardized)
+            return true
         }
+        return false
+    }
+
+    /// Releases scopes that are not in persistentPackageRoots.
+    private func releaseEphemeralSecurityScopedAccess() {
+        let keep = Set(persistentPackageRoots.map(\.standardizedFileURL))
+        var kept: [URL] = []
+        for url in securityScopedURLs {
+            let s = url.standardizedFileURL
+            if keep.contains(s) {
+                kept.append(s)
+            } else {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        securityScopedURLs = kept
     }
 
     private func releaseSecurityScopedAccess() {
@@ -399,6 +563,7 @@ final class AppModel: ObservableObject {
             url.stopAccessingSecurityScopedResource()
         }
         securityScopedURLs.removeAll()
+        persistentPackageRoots.removeAll()
     }
 
     private func mergePackageHint(fromDocumentURL url: URL) {

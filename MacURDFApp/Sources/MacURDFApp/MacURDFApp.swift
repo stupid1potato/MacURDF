@@ -24,6 +24,11 @@ struct MacURDFApp: App {
                     appModel.reload()
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+
+                Button("Grant Package Folder Access…") {
+                    appModel.grantPackageFolderAccess()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
             }
 
             CommandMenu("View") {
