@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<robot name="pkg_robot">
+  <link name="base">
+    <visual>
+      <geometry>
+        <mesh filename="package://demo_pkg/meshes/box.stl"/>
+      </geometry>
+    </visual>
+  </link>
+  <link name="missing_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://demo_pkg/meshes/nope.stl"/>
+      </geometry>
+    </visual>
+  </link>
+  <link name="relative_link">
+    <visual>
+      <geometry>
+        <mesh filename="../demo_pkg/meshes/box.stl"/>
+      </geometry>
+    </visual>
+  </link>
+</robot>
