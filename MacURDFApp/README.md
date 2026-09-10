@@ -69,10 +69,10 @@ On every file load, hints accumulate:
 
 **Canonical app sources:** `MacURDFApp/Sources/MacURDFApp` in this repo (GitHub `main`).
 
-If you keep a separate Xcode app folder (e.g. `/Users/…/MacURDF/MacURDF`), either:
+If you keep a separate Xcode app folder (e.g. `/Users/…/MacURDF/MacURDFApp` with flat `.swift` sources), either:
 
 1. **Preferred:** Point the App target’s Compile Sources at `../MacURDFApp/Sources/MacURDFApp` (and link local `Packages/URDFCore`), commit the `.xcodeproj` into the repo when ready; or
-2. **Temporary:** After `git pull`, run `./scripts/sync-xcode-app-sources.sh /path/to/XcodeAppCopy`.
+2. **Temporary:** After `git pull`, run `./scripts/sync-xcode-app-sources.sh /Users/acb/MacURDF/MacURDFApp`.
 
 Attach `MacURDFApp/Resources/MacURDFApp.entitlements` to the App target (`App Sandbox` + `User Selected File` Read Only + bookmarks). Without user-selected file access, DAE under `package://…` often fails as yellow placeholders.
 
