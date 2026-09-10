@@ -62,6 +62,18 @@ final class URDFCoreTests: XCTestCase {
         }
     }
 
+
+    func testRos2ControlJointsIgnored() throws {
+        let url = fixtureURL("ros2_control_arm/ros2_control_arm.urdf")
+        let doc = try URDFLoader().load(urdfURL: url)
+        XCTAssertEqual(doc.robotName, "ros2_control_arm")
+        XCTAssertEqual(doc.joints.count, 1)
+        XCTAssertEqual(doc.joints.first?.name, "joint1")
+        XCTAssertFalse(doc.errors.contains { $0.message.contains("joint type") },
+                       "ros2_control joints must not emit type errors: \(doc.errors)")
+        XCTAssertTrue(doc.errors.isEmpty, "errors: \(doc.errors)")
+    }
+
     private func fixtureURL(_ relative: String) -> URL {
         // #file → …/Tests/URDFCoreTests/*.swift
         // 5번 up → repo root (…/MacURDF)

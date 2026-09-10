@@ -54,8 +54,19 @@ public extension URDFDocument {
 
         for audit in audits {
             switch audit.resolution {
-            case .resolved:
-                break
+            case let .resolved(url):
+                // Path is OK; DAE triangles are loaded by the app (SceneKit), not MeshLoader.
+                if url.pathExtension.lowercased() == "dae" {
+                    warnings.append(
+                        URDFIssue(
+                            severity: .warning,
+                            file: sourceURL?.lastPathComponent,
+                            tag: "mesh",
+                            message: "DAE 메시 경로 확인됨 (link: \(audit.linkName))",
+                            hint: "렌더는 앱 SceneKit에서 로드합니다 (Core MeshLoader는 DAE 미지원)"
+                        )
+                    )
+                }
             case let .missing(path, tried):
                 let triedDesc = tried.map(\.path).joined(separator: ", ")
                 errors.append(

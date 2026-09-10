@@ -36,6 +36,12 @@ final class URDFXMLParser: NSObject, XMLParserDelegate, @unchecked Sendable {
     private var jointAxis: SIMD3<Double> = SIMD3(0, 0, 1)
     private var jointLimit: JointLimit?
 
+    /// Skip kinematic parsing inside ros2_control / transmission / gazebo subtrees.
+    private var ignoreSubtreeDepth = 0
+    private static let nonKinematicRoots: Set<String> = [
+        "ros2_control", "transmission", "gazebo"
+    ]
+
     func parse(data: Data, sourceFile: String?) {
         self.sourceFile = sourceFile
         let parser = XMLParser(data: data)
@@ -94,6 +100,15 @@ final class URDFXMLParser: NSObject, XMLParserDelegate, @unchecked Sendable {
         currentLine = parser.lineNumber
         let tag = elementName.lowercased()
         elementStack.append(tag)
+
+        if ignoreSubtreeDepth > 0 {
+            ignoreSubtreeDepth += 1
+            return
+        }
+        if Self.nonKinematicRoots.contains(tag) {
+            ignoreSubtreeDepth = 1
+            return
+        }
 
         switch tag {
         case "robot":
@@ -253,6 +268,11 @@ final class URDFXMLParser: NSObject, XMLParserDelegate, @unchecked Sendable {
         let tag = elementName.lowercased()
         if elementStack.last == tag {
             elementStack.removeLast()
+        }
+
+        if ignoreSubtreeDepth > 0 {
+            ignoreSubtreeDepth -= 1
+            return
         }
 
         switch tag {

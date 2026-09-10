@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<robot name="ros2_control_arm">
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.1 0.1 0.1"/>
+      </geometry>
+    </visual>
+  </link>
+  <link name="link1">
+    <visual>
+      <geometry>
+        <box size="0.05 0.05 0.2"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+
+  <ros2_control name="FakeSystem" type="system">
+    <hardware>
+      <plugin>fake_components/GenericSystem</plugin>
+    </hardware>
+    <joint name="base">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="shoulder">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="elbow">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+  </ros2_control>
+
+  <gazebo>
+    <joint name="gazebo_fake_joint">
+      <parent link="base_link"/>
+    </joint>
+  </gazebo>
+</robot>
