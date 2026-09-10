@@ -63,3 +63,20 @@ On every file load, hints accumulate:
 - Primitive geometries → SCNBox/Cylinder/Sphere
 - Mesh missing → red box; mesh resolved → yellow box (STL Phase 3)
 - All link nodes at identity
+
+
+## Source of truth (anti-drift)
+
+**Canonical app sources:** `MacURDFApp/Sources/MacURDFApp` in this repo (GitHub `main`).
+
+If you keep a separate Xcode app folder (e.g. `/Users/…/MacURDF/MacURDF`), either:
+
+1. **Preferred:** Point the App target’s Compile Sources at `../MacURDFApp/Sources/MacURDFApp` (and link local `Packages/URDFCore`), commit the `.xcodeproj` into the repo when ready; or
+2. **Temporary:** After `git pull`, run `./scripts/sync-xcode-app-sources.sh /path/to/XcodeAppCopy`.
+
+Attach `MacURDFApp/Resources/MacURDFApp.entitlements` to the App target (`App Sandbox` + `User Selected File` Read Only + bookmarks). Without user-selected file access, DAE under `package://…` often fails as yellow placeholders.
+
+## Phase 3+ viewport
+
+- Joint slider changes update **link `simdTransform` in place** (no SCNView/`sceneEpoch` rebuild).
+- `sceneEpoch` bumps only on open/reload, visual/collision toggle, and selection halo changes.

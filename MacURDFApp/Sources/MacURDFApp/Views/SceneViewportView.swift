@@ -1,6 +1,7 @@
 import AppKit
 import SceneKit
 import SwiftUI
+import simd
 import URDFCore
 
 struct SceneViewportView: View {
@@ -8,15 +9,15 @@ struct SceneViewportView: View {
 
     var body: some View {
         SceneViewRepresentable(
-            scene: RobotSceneBuilder.buildScene(
-                document: appModel.document,
-                audits: appModel.meshAudits,
-                transforms: appModel.linkTransforms,
-                showVisual: appModel.showVisual,
-                showCollision: appModel.showCollision,
-                selectedLinkName: appModel.selectedLinkName,
-                meshNode: { appModel.nodeForResolvedMesh(url: $0) }
-            )
+            sceneEpoch: appModel.sceneEpoch,
+            jointState: appModel.jointState,
+            document: appModel.document,
+            audits: appModel.meshAudits,
+            showVisual: appModel.showVisual,
+            showCollision: appModel.showCollision,
+            selectedLinkName: appModel.selectedLinkName,
+            linkTransforms: appModel.linkTransforms,
+            meshNode: { appModel.nodeForResolvedMesh(url: $0) }
         )
         .background(Color.black.opacity(0.92))
         .overlay(alignment: .topLeading) {
@@ -25,7 +26,7 @@ struct SceneViewportView: View {
                 .padding(8)
                 .foregroundStyle(.secondary)
         }
-        .id(appModel.sceneEpoch)
+        // Do NOT use .id(sceneEpoch) — that destroys SCNView and resets the camera.
     }
 }
 
@@ -111,26 +112,109 @@ enum ViewportScene {
 }
 
 struct SceneViewRepresentable: NSViewRepresentable {
-    let scene: SCNScene
+    var sceneEpoch: Int
+    var jointState: JointState
+    var document: URDFDocument?
+    var audits: [MeshAudit]
+    var showVisual: Bool
+    var showCollision: Bool
+    var selectedLinkName: String?
+    var linkTransforms: [String: simd_float4x4]
+    var meshNode: (URL) -> SCNNode?
+
+    final class Coordinator {
+        var appliedEpoch: Int = -1
+        /// linkName -> SCNNode under robot root
+        var linkNodes: [String: SCNNode] = [:]
+        var robotRootName: String?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeNSView(context: Context) -> SCNView {
         let view = SCNView()
-        view.scene = scene
         view.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1)
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = false
         view.antialiasingMode = .multisampling4X
-        if let camera = scene.rootNode.childNode(withName: "MainCamera", recursively: false) {
-            view.pointOfView = camera
-        }
+        rebuild(view: view, context: context, preserveCamera: false)
         return view
     }
 
     func updateNSView(_ nsView: SCNView, context: Context) {
-        let pov = nsView.pointOfView
-        nsView.scene = scene
-        if let camera = scene.rootNode.childNode(withName: "MainCamera", recursively: false) {
-            nsView.pointOfView = pov ?? camera
+        if context.coordinator.appliedEpoch != sceneEpoch {
+            rebuild(view: nsView, context: context, preserveCamera: true)
+            return
+        }
+        // FK-only: update existing link node transforms (no SCNScene swap).
+        applyTransforms(context.coordinator)
+    }
+
+    private func rebuild(view: SCNView, context: Context, preserveCamera: Bool) {
+        let scene: SCNScene
+        if let existing = view.scene, preserveCamera {
+            scene = existing
+            // Drop previous robot roots / placeholders; keep lights, grid, camera.
+            let removable = scene.rootNode.childNodes.filter { node in
+                let n = node.name ?? ""
+                return n != "MainCamera" && n != "Grid" && n != "WorldAxes"
+                    && node.light == nil
+            }
+            removable.forEach { $0.removeFromParentNode() }
+            if let doc = document {
+                scene.rootNode.addChildNode(
+                    RobotSceneBuilder.makeRobotRoot(
+                        document: doc,
+                        audits: audits,
+                        transforms: linkTransforms,
+                        showVisual: showVisual,
+                        showCollision: showCollision,
+                        selectedLinkName: selectedLinkName,
+                        meshNode: meshNode
+                    )
+                )
+            } else {
+                scene.rootNode.addChildNode(ViewportScene.placeholderCube())
+            }
+        } else {
+            scene = RobotSceneBuilder.buildScene(
+                document: document,
+                audits: audits,
+                transforms: linkTransforms,
+                showVisual: showVisual,
+                showCollision: showCollision,
+                selectedLinkName: selectedLinkName,
+                meshNode: meshNode
+            )
+            view.scene = scene
+            if let cam = scene.rootNode.childNode(withName: "MainCamera", recursively: false) {
+                view.pointOfView = cam
+            }
+        }
+
+        var map: [String: SCNNode] = [:]
+        if let doc = document {
+            let root = scene.rootNode.childNode(withName: doc.robotName, recursively: false)
+            context.coordinator.robotRootName = doc.robotName
+            if let root {
+                for link in doc.links {
+                    if let node = root.childNode(withName: link.name, recursively: false) {
+                        map[link.name] = node
+                    }
+                }
+            }
+        } else {
+            context.coordinator.robotRootName = nil
+        }
+        context.coordinator.linkNodes = map
+        context.coordinator.appliedEpoch = sceneEpoch
+    }
+
+    private func applyTransforms(_ coordinator: Coordinator) {
+        for (name, node) in coordinator.linkNodes {
+            node.simdTransform = linkTransforms[name] ?? matrix_identity_float4x4
         }
     }
 }

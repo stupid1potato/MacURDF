@@ -15,12 +15,34 @@ enum RobotSceneBuilder {
         meshNode: (URL) -> SCNNode?
     ) -> SCNScene {
         let scene = ViewportScene.makeBaseEnvironment()
-
         guard let document else {
             scene.rootNode.addChildNode(ViewportScene.placeholderCube())
             return scene
         }
+        scene.rootNode.addChildNode(
+            makeRobotRoot(
+                document: document,
+                audits: audits,
+                transforms: transforms,
+                showVisual: showVisual,
+                showCollision: showCollision,
+                selectedLinkName: selectedLinkName,
+                meshNode: meshNode
+            )
+        )
+        return scene
+    }
 
+    /// Robot subtree only (no lights/grid/camera). Node name = `document.robotName`.
+    static func makeRobotRoot(
+        document: URDFDocument,
+        audits: [MeshAudit],
+        transforms: [String: simd_float4x4],
+        showVisual: Bool,
+        showCollision: Bool,
+        selectedLinkName: String?,
+        meshNode: (URL) -> SCNNode?
+    ) -> SCNNode {
         let auditByLinkFile: [String: MeshResolution] = {
             var map: [String: MeshResolution] = [:]
             for a in audits {
@@ -31,7 +53,6 @@ enum RobotSceneBuilder {
 
         let robotRoot = SCNNode()
         robotRoot.name = document.robotName
-        scene.rootNode.addChildNode(robotRoot)
 
         for link in document.links {
             let linkNode = SCNNode()
@@ -61,7 +82,6 @@ enum RobotSceneBuilder {
                             meshNode: meshNode,
                             preserveMaterials: true
                         )
-                        // Optional: visual DAE fail → same-link collision STL fallback
                         if geo.name == "meshPlaceholder",
                            case let .mesh(filename, _) = visual.geometry,
                            filename.lowercased().hasSuffix(".dae") {
@@ -93,9 +113,7 @@ enum RobotSceneBuilder {
                     geo.name = "\(link.name)_collision_\(idx)"
                     geo.simdTransform = PoseMath.matrix(from: collision.origin)
                     geo.enumerateHierarchy { child, _ in
-                        if let m = child.geometry?.firstMaterial {
-                            m.transparency = 0.45
-                        }
+                        child.geometry?.firstMaterial?.transparency = 0.45
                     }
                     linkNode.addChildNode(geo)
                 }
@@ -112,7 +130,7 @@ enum RobotSceneBuilder {
             robotRoot.addChildNode(linkNode)
         }
 
-        return scene
+        return robotRoot
     }
 
     private static func collisionMeshFallback(
