@@ -15,7 +15,7 @@ struct SceneViewportView: View {
                 showVisual: appModel.showVisual,
                 showCollision: appModel.showCollision,
                 selectedLinkName: appModel.selectedLinkName,
-                meshGeometry: { appModel.geometryForResolvedMesh(url: $0) }
+                meshNode: { appModel.nodeForResolvedMesh(url: $0) }
             )
         )
         .background(Color.black.opacity(0.92))

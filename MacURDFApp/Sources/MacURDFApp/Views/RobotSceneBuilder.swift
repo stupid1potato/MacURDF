@@ -12,7 +12,7 @@ enum RobotSceneBuilder {
         showVisual: Bool,
         showCollision: Bool,
         selectedLinkName: String?,
-        meshGeometry: (URL) -> SCNGeometry?
+        meshNode: (URL) -> SCNNode?
     ) -> SCNScene {
         let scene = ViewportScene.makeBaseEnvironment()
 
@@ -46,19 +46,33 @@ enum RobotSceneBuilder {
                         linkName: link.name,
                         auditMap: auditByLinkFile,
                         color: .systemGray,
-                        meshGeometry: meshGeometry
+                        meshNode: meshNode,
+                        preserveMaterials: false
                     )
                     geo.name = "\(link.name)_visual_fallback"
                     linkNode.addChildNode(geo)
                 } else {
                     for (idx, visual) in visuals.enumerated() {
-                        let geo = node(
+                        var geo = node(
                             for: visual.geometry,
                             linkName: link.name,
                             auditMap: auditByLinkFile,
                             color: .systemTeal,
-                            meshGeometry: meshGeometry
+                            meshNode: meshNode,
+                            preserveMaterials: true
                         )
+                        // Optional: visual DAE fail → same-link collision STL fallback
+                        if geo.name == "meshPlaceholder",
+                           case let .mesh(filename, _) = visual.geometry,
+                           filename.lowercased().hasSuffix(".dae") {
+                            if let fallback = collisionMeshFallback(
+                                link: link,
+                                auditMap: auditByLinkFile,
+                                meshNode: meshNode
+                            ) {
+                                geo = fallback
+                            }
+                        }
                         geo.name = "\(link.name)_visual_\(idx)"
                         geo.simdTransform = PoseMath.matrix(from: visual.origin)
                         linkNode.addChildNode(geo)
@@ -73,12 +87,15 @@ enum RobotSceneBuilder {
                         linkName: link.name,
                         auditMap: auditByLinkFile,
                         color: NSColor.systemOrange.withAlphaComponent(0.45),
-                        meshGeometry: meshGeometry
+                        meshNode: meshNode,
+                        preserveMaterials: false
                     )
                     geo.name = "\(link.name)_collision_\(idx)"
                     geo.simdTransform = PoseMath.matrix(from: collision.origin)
-                    if let m = geo.geometry?.firstMaterial {
-                        m.transparency = 0.45
+                    geo.enumerateHierarchy { child, _ in
+                        if let m = child.geometry?.firstMaterial {
+                            m.transparency = 0.45
+                        }
                     }
                     linkNode.addChildNode(geo)
                 }
@@ -98,12 +115,31 @@ enum RobotSceneBuilder {
         return scene
     }
 
+    private static func collisionMeshFallback(
+        link: Link,
+        auditMap: [String: MeshResolution],
+        meshNode: (URL) -> SCNNode?
+    ) -> SCNNode? {
+        for collision in link.collisions {
+            guard case let .mesh(filename, scale) = collision.geometry else { continue }
+            let key = "\(link.name)|\(filename)"
+            guard case let .resolved(url) = auditMap[key],
+                  let n = meshNode(url) else { continue }
+            if let scale {
+                n.scale = SCNVector3(scale.x, scale.y, scale.z)
+            }
+            return n
+        }
+        return nil
+    }
+
     private static func node(
         for geometry: Geometry,
         linkName: String,
         auditMap: [String: MeshResolution],
         color: NSColor,
-        meshGeometry: (URL) -> SCNGeometry?
+        meshNode: (URL) -> SCNNode?,
+        preserveMaterials: Bool
     ) -> SCNNode {
         switch geometry {
         case let .box(size):
@@ -131,11 +167,18 @@ enum RobotSceneBuilder {
         case let .mesh(filename, scale):
             let key = "\(linkName)|\(filename)"
             let resolution = auditMap[key]
-            if case let .resolved(url) = resolution, let geo = meshGeometry(url) {
-                let n = SCNNode(geometry: geo.copy() as? SCNGeometry ?? geo)
-                n.geometry?.firstMaterial?.diffuse.contents = color
+            if case let .resolved(url) = resolution, let n = meshNode(url) {
+                if !preserveMaterials {
+                    n.enumerateHierarchy { child, _ in
+                        child.geometry?.firstMaterial?.diffuse.contents = color
+                    }
+                }
                 if let scale {
-                    n.scale = SCNVector3(scale.x, scale.y, scale.z)
+                    n.scale = SCNVector3(
+                        n.scale.x * CGFloat(scale.x),
+                        n.scale.y * CGFloat(scale.y),
+                        n.scale.z * CGFloat(scale.z)
+                    )
                 }
                 return n
             }
@@ -151,6 +194,7 @@ enum RobotSceneBuilder {
             let box = SCNBox(width: 0.2, height: 0.2, length: 0.2, chamferRadius: 0.01)
             box.firstMaterial?.diffuse.contents = placeholderColor
             let n = SCNNode(geometry: box)
+            n.name = "meshPlaceholder"
             if let scale {
                 n.scale = SCNVector3(scale.x, scale.y, scale.z)
             }

@@ -156,16 +156,78 @@ final class AppModel: ObservableObject {
         rebuildScene()
     }
 
-    func geometryForResolvedMesh(url: URL) -> SCNGeometry? {
-        if let cached = meshGeometryCache[url] { return cached }
+    /// Returns a clone of the cached mesh node for a resolved URL (STL/OBJ via MeshLoader, DAE via SCNScene).
+    func nodeForResolvedMesh(url: URL) -> SCNNode? {
+        if let cached = meshNodeCache[url] {
+            return cached.clone()
+        }
+        let ext = url.pathExtension.lowercased()
+        if ext == "dae" {
+            if let node = loadDAENode(url: url) {
+                meshNodeCache[url] = node
+                return node.clone()
+            }
+            return nil
+        }
         do {
             let buffer = try meshLoader.load(url: url)
             let geo = MeshBufferSceneKit.geometry(from: buffer)
+            // STL/OBJ have no embedded materials — teal is fine.
             geo.firstMaterial?.diffuse.contents = NSColor.systemTeal
-            meshGeometryCache[url] = geo
-            return geo
+            let node = SCNNode(geometry: geo)
+            meshNodeCache[url] = node
+            return node.clone()
         } catch {
+            appendMeshLoadWarning(url: url, detail: error.localizedDescription)
             return nil
+        }
+    }
+
+    /// Backward-compatible alias used by older call sites.
+    func geometryForResolvedMesh(url: URL) -> SCNGeometry? {
+        nodeForResolvedMesh(url: url)?.geometry
+    }
+
+    private func loadDAENode(url: URL) -> SCNNode? {
+        do {
+            let options: [SCNSceneSource.LoadingOption: Any] = [
+                .assetDirectoryURLs: [url.deletingLastPathComponent()],
+                .createNormalsIfAbsent: true,
+                .checkConsistency: true,
+            ]
+            let scene = try SCNScene(url: url, options: options)
+            let wrapper = SCNNode()
+            wrapper.name = url.lastPathComponent
+            for child in scene.rootNode.childNodes {
+                wrapper.addChildNode(child.clone())
+            }
+            if wrapper.childNodes.isEmpty {
+                // Some DAEs put geometry on the root itself
+                if let geo = scene.rootNode.geometry {
+                    wrapper.geometry = geo
+                    wrapper.morpher = scene.rootNode.morpher
+                } else {
+                    appendMeshLoadWarning(url: url, detail: "씬에 표시할 노드/지오메트리가 없습니다")
+                    return nil
+                }
+            }
+            return wrapper
+        } catch {
+            appendMeshLoadWarning(url: url, detail: error.localizedDescription)
+            return nil
+        }
+    }
+
+    private func appendMeshLoadWarning(url: URL, detail: String) {
+        let issue = URDFIssue(
+            severity: .warning,
+            file: url.lastPathComponent,
+            tag: "mesh",
+            message: "메시 로드 실패: \(url.lastPathComponent)",
+            hint: detail
+        )
+        if !displayedIssues.contains(where: { $0.message == issue.message && $0.file == issue.file }) {
+            displayedIssues.append(issue)
         }
     }
 
@@ -185,7 +247,7 @@ final class AppModel: ObservableObject {
         // Warm mesh cache for resolved audits
         for audit in audits {
             if case let .resolved(url) = audit.resolution {
-                _ = geometryForResolvedMesh(url: url)
+                _ = nodeForResolvedMesh(url: url)
             }
         }
         rebuildScene()
