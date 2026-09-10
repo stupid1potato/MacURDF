@@ -46,6 +46,21 @@ struct MacURDFApp: App {
                         set: { appModel.setShowCollision($0) }
                     )
                 )
+                Divider()
+                Toggle(
+                    "Z-up URDF (stand upright)",
+                    isOn: Binding(
+                        get: { appModel.useZUpToYUp },
+                        set: { appModel.setUseZUpToYUp($0) }
+                    )
+                )
+                Toggle(
+                    "Teal mesh tint",
+                    isOn: Binding(
+                        get: { appModel.tealMeshTint },
+                        set: { appModel.setTealMeshTint($0) }
+                    )
+                )
             }
         }
 

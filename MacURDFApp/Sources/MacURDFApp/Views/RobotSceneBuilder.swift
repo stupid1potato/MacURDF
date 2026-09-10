@@ -12,6 +12,8 @@ enum RobotSceneBuilder {
         showVisual: Bool,
         showCollision: Bool,
         selectedLinkName: String?,
+        useZUpToYUp: Bool,
+        tealMeshTint: Bool,
         meshNode: (URL) -> SCNNode?
     ) -> SCNScene {
         let scene = ViewportScene.makeBaseEnvironment()
@@ -27,13 +29,16 @@ enum RobotSceneBuilder {
                 showVisual: showVisual,
                 showCollision: showCollision,
                 selectedLinkName: selectedLinkName,
+                useZUpToYUp: useZUpToYUp,
+                tealMeshTint: tealMeshTint,
                 meshNode: meshNode
             )
         )
         return scene
     }
 
-    /// Robot subtree only (no lights/grid/camera). Node name = `document.robotName`.
+    /// Returns world-correction wrapper (`URDFWorldCorrection`) containing robot root named `document.robotName`.
+    /// Link FK transforms stay on link nodes; Z-up→Y-up is only on the wrapper.
     static func makeRobotRoot(
         document: URDFDocument,
         audits: [MeshAudit],
@@ -41,6 +46,8 @@ enum RobotSceneBuilder {
         showVisual: Bool,
         showCollision: Bool,
         selectedLinkName: String?,
+        useZUpToYUp: Bool,
+        tealMeshTint: Bool,
         meshNode: (URL) -> SCNNode?
     ) -> SCNNode {
         let auditByLinkFile: [String: MeshResolution] = {
@@ -80,7 +87,7 @@ enum RobotSceneBuilder {
                             linkName: link.name,
                             link: link,
                             auditMap: auditByLinkFile,
-                            color: .systemTeal,
+                            color: tealMeshTint ? .systemTeal : .lightGray,
                             meshNode: meshNode,
                             preserveMaterials: true
                         )
@@ -122,7 +129,14 @@ enum RobotSceneBuilder {
             robotRoot.addChildNode(linkNode)
         }
 
-        return robotRoot
+        let world = SCNNode()
+        world.name = "URDFWorldCorrection"
+        if useZUpToYUp {
+            // URDF/ROS Z-up → SceneKit Y-up
+            world.simdOrientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        }
+        world.addChildNode(robotRoot)
+        return world
     }
 
     /// `.../visual/linkN.dae` → `.../collision/linkN.stl`

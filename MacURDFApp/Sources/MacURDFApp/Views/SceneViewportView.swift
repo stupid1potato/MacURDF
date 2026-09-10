@@ -16,15 +16,38 @@ struct SceneViewportView: View {
             showVisual: appModel.showVisual,
             showCollision: appModel.showCollision,
             selectedLinkName: appModel.selectedLinkName,
+            useZUpToYUp: appModel.useZUpToYUp,
+            tealMeshTint: appModel.tealMeshTint,
             linkTransforms: appModel.linkTransforms,
             meshNode: { appModel.nodeForResolvedMesh(url: $0) }
         )
         .background(Color.black.opacity(0.92))
         .overlay(alignment: .topLeading) {
-            Text(appModel.document?.robotName ?? "3D Viewport")
-                .font(.caption)
-                .padding(8)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(appModel.document?.robotName ?? "3D Viewport")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Toggle("Visual", isOn: Binding(
+                        get: { appModel.showVisual },
+                        set: { appModel.setShowVisual($0) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    Toggle("Teal tint", isOn: Binding(
+                        get: { appModel.tealMeshTint },
+                        set: { appModel.setTealMeshTint($0) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    Toggle("Z-up", isOn: Binding(
+                        get: { appModel.useZUpToYUp },
+                        set: { appModel.setUseZUpToYUp($0) }
+                    ))
+                    .toggleStyle(.checkbox)
+                }
+                .font(.caption2)
                 .foregroundStyle(.secondary)
+            }
+            .padding(8)
         }
         // Do NOT use .id(sceneEpoch) — that destroys SCNView and resets the camera.
     }
@@ -119,6 +142,8 @@ struct SceneViewRepresentable: NSViewRepresentable {
     var showVisual: Bool
     var showCollision: Bool
     var selectedLinkName: String?
+    var useZUpToYUp: Bool
+    var tealMeshTint: Bool
     var linkTransforms: [String: simd_float4x4]
     var meshNode: (URL) -> SCNNode?
 
@@ -172,6 +197,8 @@ struct SceneViewRepresentable: NSViewRepresentable {
                         showVisual: showVisual,
                         showCollision: showCollision,
                         selectedLinkName: selectedLinkName,
+                        useZUpToYUp: useZUpToYUp,
+                        tealMeshTint: tealMeshTint,
                         meshNode: meshNode
                     )
                 )
@@ -186,6 +213,8 @@ struct SceneViewRepresentable: NSViewRepresentable {
                 showVisual: showVisual,
                 showCollision: showCollision,
                 selectedLinkName: selectedLinkName,
+                useZUpToYUp: useZUpToYUp,
+                tealMeshTint: tealMeshTint,
                 meshNode: meshNode
             )
             view.scene = scene
@@ -196,7 +225,7 @@ struct SceneViewRepresentable: NSViewRepresentable {
 
         var map: [String: SCNNode] = [:]
         if let doc = document {
-            let root = scene.rootNode.childNode(withName: doc.robotName, recursively: false)
+            let root = scene.rootNode.childNode(withName: doc.robotName, recursively: true)
             context.coordinator.robotRootName = doc.robotName
             if let root {
                 for link in doc.links {

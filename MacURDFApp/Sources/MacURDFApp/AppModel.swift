@@ -20,6 +20,10 @@ final class AppModel: ObservableObject {
     @Published var displayedIssues: [URDFIssue] = []
     @Published var showVisual: Bool = true
     @Published var showCollision: Bool = false
+    /// ROS/URDF Z-up → SceneKit Y-up (rotate root about X by -π/2). Default ON.
+    @Published var useZUpToYUp: Bool = true
+    /// Force teal on STL/OBJ mesh materials. OFF → neutral gray.
+    @Published var tealMeshTint: Bool = true
     /// Bumped only when scene *structure* must rebuild (open/reload/toggles/selection/mesh).
     @Published private(set) var sceneEpoch: Int = 0
 
@@ -190,17 +194,36 @@ final class AppModel: ObservableObject {
         rebuildSceneStructure()
     }
 
+    func setUseZUpToYUp(_ value: Bool) {
+        useZUpToYUp = value
+        rebuildSceneStructure()
+    }
+
+    func setTealMeshTint(_ value: Bool) {
+        tealMeshTint = value
+        // Cached STL nodes bake diffuse color — clear so tint reapplies.
+        meshNodeCache.removeAll()
+        rebuildSceneStructure()
+    }
+
     /// Returns a clone of the cached mesh node for a resolved URL (STL/OBJ via MeshLoader, DAE via SCNScene).
     /// Blender COLLADA often fails in SceneKit — on DAE failure, tries `visual/X.dae` → `collision/X.stl`.
     func nodeForResolvedMesh(url: URL) -> SCNNode? {
         if let cached = meshNodeCache[url] {
-            return cached.clone()
+            let clone = cached.clone()
+            applyMeshTint(toNode: clone)
+            return clone
         }
         let ext = url.pathExtension.lowercased()
         if ext == "dae" {
             if let node = loadDAENode(url: url) {
                 meshNodeCache[url] = node
-                return node.clone()
+                let clone = node.clone()
+                // DAE keeps embedded materials unless teal tint is forced.
+                if tealMeshTint {
+                    applyMeshTint(toNode: clone)
+                }
+                return clone
             }
             // SceneKit/MDL cannot open many Blender DAEs — fall back to collision STL.
             if let stlURL = collisionSTLSibling(ofVisualDAE: url) {
@@ -217,7 +240,9 @@ final class AppModel: ObservableObject {
                     // Cache under DAE key so visual path stops showing yellow placeholders.
                     meshNodeCache[url] = stlNode
                     meshNodeCache[stlURL] = stlNode
-                    return stlNode.clone()
+                    let clone = stlNode.clone()
+                    applyMeshTint(toNode: clone)
+                    return clone
                 }
                 appendIssue(
                     severity: .warning,
@@ -235,7 +260,26 @@ final class AppModel: ObservableObject {
             }
             return nil
         }
-        return loadSTLOrOBJNode(url: url)?.clone()
+        if let node = loadSTLOrOBJNode(url: url) {
+            let clone = node.clone()
+            applyMeshTint(toNode: clone)
+            return clone
+        }
+        return nil
+    }
+
+    private func applyMeshTint(to geometry: SCNGeometry) {
+        let color: NSColor = tealMeshTint ? .systemTeal : .lightGray
+        geometry.firstMaterial?.diffuse.contents = color
+    }
+
+    private func applyMeshTint(toNode node: SCNNode) {
+        let color: NSColor = tealMeshTint ? .systemTeal : .lightGray
+        node.enumerateHierarchy { child, _ in
+            if child.geometry != nil {
+                child.geometry?.firstMaterial?.diffuse.contents = color
+            }
+        }
     }
 
     func geometryForResolvedMesh(url: URL) -> SCNGeometry? {
@@ -271,7 +315,7 @@ final class AppModel: ObservableObject {
             _ = try Data(contentsOf: url, options: [.mappedIfSafe])
             let buffer = try meshLoader.load(url: url)
             let geo = MeshBufferSceneKit.geometry(from: buffer)
-            geo.firstMaterial?.diffuse.contents = NSColor.systemTeal
+            applyMeshTint(to: geo)
             let node = SCNNode(geometry: geo)
             meshNodeCache[url] = node
             return node
